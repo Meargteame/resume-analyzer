@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # FastAPI Backend
+  backend:
+    build: ./backend
+    container_name: resume_analyzer_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/resume_analyzer
+      - SECRET_KEY=${SECRET_KEY}
+      - ALGORITHM=${ALGORITHM}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - N8N_WEBHOOK_URL=${N8N_WEBHOOK_URL}
+    depends_on:
+      - postgres
+    volumes:
+      - ./uploads:/app/uploads
+    networks:
+      - resume_analyzer_network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: resume_analyzer_db
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - resume_analyzer_network
+
+  # pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: resume_analyzer_pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@admin.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - resume_analyzer_network
+
+  # n8n Workflow Automation
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: resume_analyzer_n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=admin
+      - WEBHOOK_URL=http://n8n:5678/
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    depends_on:
+      - postgres
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - resume_analyzer_network
+
+volumes:
+  postgres_data:
+  n8n_data:
+
+networks:
+  resume_analyzer_network:
+    driver: bridge

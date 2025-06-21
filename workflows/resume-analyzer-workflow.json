@@ -1,0 +1,268 @@
+{
+  "name": "Resume Analyzer Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "resume-upload",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Resume Upload Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        240,
+        300
+      ],
+      "webhookId": "resume-upload"
+    },
+    {
+      "parameters": {
+        "operation": "executeCommand",
+        "command": "python3 -c \"import tika; from tika import parser; parsed = parser.from_file('{{ $json.file_path }}'); print(parsed['content'] if parsed and 'content' in parsed else 'No content extracted')\""
+      },
+      "id": "extract-text",
+      "name": "Extract Text from PDF",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        460,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "operation": "message",
+        "model": "gpt-3.5-turbo",
+        "messages": {
+          "messageValues": [
+            {
+              "role": "system",
+              "content": "You are an expert resume parser. Extract structured information from the provided resume text and return ONLY a valid JSON object with the following structure:\n\n{\n  \"full_name\": \"Full Name\",\n  \"email\": \"email@example.com\",\n  \"phone\": \"phone number\",\n  \"skills\": [\"skill1\", \"skill2\", \"skill3\"],\n  \"experience_years\": number,\n  \"last_job_title\": \"Most Recent Job Title\"\n}\n\nRules:\n1. Return ONLY valid JSON, no explanations\n2. If information is not found, use null for strings/numbers and [] for arrays\n3. For experience_years, estimate based on work history\n4. Extract skills as an array of strings\n5. Be precise and consistent"
+            },
+            {
+              "role": "user",
+              "content": "Parse this resume text:\n\n{{ $node[\"Extract Text from PDF\"].json.stdout }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.1
+        }
+      },
+      "id": "parse-with-openai",
+      "name": "Parse Resume with OpenAI",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1,
+      "position": [
+        680,
+        300
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-credentials",
+          "name": "OpenAI Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE resumes SET \n  full_name = '{{ $json.parsed_data.full_name }}',\n  email = '{{ $json.parsed_data.email }}',\n  phone = '{{ $json.parsed_data.phone }}',\n  skills = ARRAY{{ $json.parsed_data.skills }},\n  experience_years = {{ $json.parsed_data.experience_years }},\n  last_job_title = '{{ $json.parsed_data.last_job_title }}',\n  raw_text = '{{ $node[\"Extract Text from PDF\"].json.stdout }}',\n  analysis_status = 'completed',\n  updated_at = NOW()\nWHERE id = {{ $node[\"Resume Upload Webhook\"].json.body.resume_id }};"
+      },
+      "id": "store-results",
+      "name": "Store Results in Database",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the OpenAI response to extract JSON\nconst openaiResponse = $input.all()[0].json.message.content;\n\ntry {\n  // Clean the response and parse JSON\n  const cleanedResponse = openaiResponse.trim();\n  const parsed_data = JSON.parse(cleanedResponse);\n  \n  // Validate required fields\n  const result = {\n    parsed_data: {\n      full_name: parsed_data.full_name || null,\n      email: parsed_data.email || null,\n      phone: parsed_data.phone || null,\n      skills: Array.isArray(parsed_data.skills) ? parsed_data.skills : [],\n      experience_years: parsed_data.experience_years || null,\n      last_job_title: parsed_data.last_job_title || null\n    },\n    raw_response: openaiResponse\n  };\n  \n  return result;\n} catch (error) {\n  // If parsing fails, return default structure\n  return {\n    parsed_data: {\n      full_name: null,\n      email: null,\n      phone: null,\n      skills: [],\n      experience_years: null,\n      last_job_title: null\n    },\n    parsing_error: error.message,\n    raw_response: openaiResponse\n  };\n}"
+      },
+      "id": "process-openai-response",
+      "name": "Process OpenAI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:8000/api/webhook/analysis-complete",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "resume_id",
+              "value": "={{ $node[\"Resume Upload Webhook\"].json.body.resume_id }}"
+            },
+            {
+              "name": "analysis_results",
+              "value": "={{ $json.parsed_data }}"
+            }
+          ]
+        }
+      },
+      "id": "notify-backend",
+      "name": "Notify Backend of Completion",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1340,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"success\": true,\n  \"message\": \"Resume analysis completed\",\n  \"resume_id\": {{ $node[\"Resume Upload Webhook\"].json.body.resume_id }},\n  \"analysis_results\": {{ $json.parsed_data }}\n}"
+      },
+      "id": "webhook-response",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1560,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE resumes SET analysis_status = 'failed', updated_at = NOW() WHERE id = {{ $node[\"Resume Upload Webhook\"].json.body.resume_id }};"
+      },
+      "id": "mark-failed",
+      "name": "Mark as Failed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 1,
+      "position": [
+        900,
+        500
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "postgres-credentials",
+          "name": "PostgreSQL Credentials"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"success\": false,\n  \"message\": \"Resume analysis failed\",\n  \"resume_id\": {{ $node[\"Resume Upload Webhook\"].json.body.resume_id }},\n  \"error\": \"{{ $json.error }}\"\n}",
+        "responseCode": 500
+      },
+      "id": "error-response",
+      "name": "Error Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        500
+      ]
+    }
+  ],
+  "connections": {
+    "Resume Upload Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Text from PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Text from PDF": {
+      "main": [
+        [
+          {
+            "node": "Parse Resume with OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Resume with OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Process OpenAI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Results in Database": {
+      "main": [
+        [
+          {
+            "node": "Notify Backend of Completion",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process OpenAI Response": {
+      "main": [
+        [
+          {
+            "node": "Store Results in Database",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notify Backend of Completion": {
+      "main": [
+        [
+          {
+            "node": "Webhook Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": {
+      "callerPolicy": "any"
+    }
+  },
+  "pinData": {},
+  "staticData": null,
+  "tags": ["resume", "ai", "analysis"],
+  "triggerCount": 1,
+  "updatedAt": "2025-06-21T00:00:00.000Z",
+  "versionId": "1"
+}
